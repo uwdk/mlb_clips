@@ -67,7 +67,7 @@ scrape_by_gamePk <- function(gamePk){#lapply w/vector of games
 
 		#find link type
 		#NOTE - 05/04/2019 has 3 types now -  _4000K.mp4; m3u8; _16000K.mp4
-		link_urls <- video_links_table$playbacks %>% lapply(., function(x) x$url %>% unique %>% t() %>% as.data.table) %>% rbindlist() #%>% setnames(c("mp4", "m3u8"))
+		link_urls <- video_links_table$playbacks %>% lapply(., function(x) x$url %>% unique %>% t() %>% as.data.table) %>% rbindlist(fill = TRUE, use.names = TRUE) #%>% setnames(c("mp4", "m3u8"))
 
 		setnames(link_urls, 1, "mp4")
 		setnames(link_urls, 2, "m3u8")
