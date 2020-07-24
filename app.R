@@ -16,27 +16,32 @@ get_schedule <- function(x){#x is date yyy-mm-dd
 
 	parse_results <- fromJSON(rawToChar(scrape_page$content))
 
-	game_table <- as.data.table(parse_results$dates$games)
+	# game_table <- as.data.table(parse_results$dates$games)
+	game_table <- parse_results$dates$games %>% unlist(recursive = FALSE)
 
-	games <- game_table[, .(
-	gamePk,
+	# games <- game_table[, .(
+	games <- data.table(
+	gamePk = game_table$gamePk,
 	date = x,
-	gameType
-	)]
+	gameType = game_table$gameType
+	)
 
 	away_teams <- game_table$teams[[1]]$team
 	home_teams <- game_table$teams[[2]]$team
 
+	away_score <- data.table(a_score = game_table$teams[[1]]$score)
+	home_score <- data.table(h_score = game_table$teams[[2]]$score)
+
 	#add game status and time if not started
 	game_times <- game_table$gameDate %>% ymd_hms() %>% with_tz("America/New_York") %>% format("%I:%M %p") %>% as.data.table %>% setnames("time")
 
-	game_status <- game_table$status[3]
+	game_status <- game_table$status[3] %>% setnames("status")
 
 	#create table
-	games_output <- c(games, away=away_teams[2], home = home_teams[2], game_times, status = game_status) %>% as.data.table
+	games_output <- c(games, away=away_teams[2], home = home_teams[2], game_times, game_status, away_score, home_score) %>% as.data.table
 
-	games_output[status %like% "Final|Progress", game:= paste0(away.name, " @ " , home.name, " (", status, ")")]
-	games_output[!(status %like% "Final|Progress"), game:= paste0(away.name, " @ " , home.name, " (", time, ")")]
+	games_output[!(status %like% "Warmup|Scheduled|Pre"), game:= paste0(away.name, " @ " , home.name, " (", status, ": ", a_score, " - ", h_score, ")")]
+	games_output[status %like% "Warmup|Scheduled|Pre", game:= paste0(away.name, " @ " , home.name, " (", time, ")")]
 
 	return(games_output)
 
@@ -58,8 +63,9 @@ scrape_by_gamePk <- function(gamePk){#lapply w/vector of games
 
 	#NOTE - some url not coded with date correctly, pull url from source rather than create; 3/31/19 - brewer game - dates = 2/31/19
 
+	#NOTE 09/09/2019 - to exclude missing video url
 	if (nrow(video_links_table)>0){
-		video_table_output <- video_links_table[, .(
+		video_table_output <- video_links_table[is.na(mediaPlaybackId) == FALSE, .(
 			gamePk,
 			# mediaPlaybackId,
 			headline,
@@ -67,21 +73,28 @@ scrape_by_gamePk <- function(gamePk){#lapply w/vector of games
 
 		#find link type
 		#NOTE - 05/04/2019 has 3 types now -  _4000K.mp4; m3u8; _16000K.mp4
-		link_urls <- video_links_table$playbacks %>% lapply(., function(x) x$url %>% unique %>% t() %>% as.data.table) %>% rbindlist(fill = TRUE, use.names = TRUE) #%>% setnames(c("mp4", "m3u8"))
+		#NOTE 09/09/2019 - skip over null value
+		video_links_no_null <- lapply(video_links_table$playbacks, is.null)== FALSE
+
+		link_urls <- video_links_table$playbacks[video_links_no_null] %>% lapply(., function(x) x$url %>% unique %>% t() %>% as.data.table) %>% rbindlist(fill = TRUE, use.names = TRUE) #%>% setnames(c("mp4", "m3u8"))
 
 		setnames(link_urls, 1, "mp4")
 		setnames(link_urls, 2, "m3u8")
 
 		final_output <- data.table(video_table_output, link_urls)
 
-		#FUTURE - create combos to populate shiny selections too
-		final_output[m3u8 %like% "bdata", Medium:= gsub(".m3u8", "_1200.m3u8", m3u8)]
-		final_output[!(m3u8 %like% "bdata"), Medium:= gsub(".m3u8", "_640x360_29_1072K.m3u8", m3u8)]
+		#FUTURE - create combos to populate shiny selections too --
+# 736K
+# 2372K
+# 5472K
+
+#NOTE 07/22/2020 - removed b/c url changed; possibly need to change back when games are live?
+# 		final_output[m3u8 %like% "bdata", Medium:= gsub(".m3u8", "_1200.m3u8", m3u8)]
+# 		final_output[!(m3u8 %like% "bdata"), Medium:= gsub(".m3u8", "_640x360_29_1072K.m3u8", m3u8)]
 
 	} else {NULL}
 
 }
-
 # list_of_game_videos <- lapply(c(565320), scrape_by_gamePk)
 
 #final processing to prep data
@@ -158,7 +171,7 @@ ui <- fluidPage(
 	titlePanel(paste0("MLB highlights")),
 
     sidebarLayout(
-      sidebarPanel(
+      sidebarPanel(width = 3,
 		dateInput("date_to_scrape", "Select date", value = default_date),
 
 		# actionButton("find_games", "Find games"),
@@ -168,8 +181,7 @@ ui <- fluidPage(
 		actionButton("go", "Retrieve videos"),
 
         radioButtons("qualityInput", "Video Quality",
-			# choices = c("mp4", "Small", "Medium", "High", "Very High"),
-			choices = c("mp4", "Medium"),
+			choices = c("mp4", "Small", "Medium", "Large"),
 			selected = "Medium"),
 
         # uiOutput("team_output")
@@ -222,12 +234,24 @@ server <- function(input, output) {
 
 	final <- reactive({
 		if(is.null(data())==FALSE){
+
+		if (input$qualityInput == "Small"){
+			data()[, url:= gsub(".m3u8", "_736K.m3u8", m3u8)]
+		} else if (input$qualityInput == "Medium"){
+			data()[, url:= gsub(".m3u8", "_2372K.m3u8", m3u8)]
+		} else if (input$qualityInput == "Large"){
+			data()[, url:= gsub(".m3u8", "_5472K.m3u8", m3u8)]
+		} else {
+			data()[, url:= mp4]
+		}
+
 			# data()[, full_link:= lapply(link_partial, function(x) format_link(x, input$qualityInput))] %>% .[, .(
 			data()[, .(
 			game,
 			headline,
 			blurb,
-			link = paste0("<a href=\"", get(input$qualityInput), "\" target=\"_blank\">"," Video </a>")
+# 			link = paste0("<a href=\"", get(input$qualityInput), "\" target=\"_blank\">"," Video </a>")
+			link = paste0("<a href=\"", url, "\" target=\"_blank\">"," Video </a>")
 			)]
 		} else {NULL}
 	})
